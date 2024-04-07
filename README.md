@@ -9,7 +9,7 @@ Being a movie junkie, I have a personal interest in exploring this dataset. Some
 - Censorship over time 
 - Relationships between actors and directors
 
-Example plots used in the Rmd:
+# Example plots used in the Rmd:
 
 ## Distribution of ratings
 <img src="https://github.com/ianian-dot/moviesds/assets/59313290/06a1f9d1-bad9-4554-9a48-b4350a046fa8" width="400" height="300">
