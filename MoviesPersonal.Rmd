@@ -1,0 +1,580 @@
+---
+title: "Movies personal project"
+author: "Ian"
+date: "2022-11-02"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library("knitr")
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set("Documents/Masters/Kaggle practice/")
+
+library(tidyverse)
+library(kableExtra)
+library(car)
+
+```
+
+## Looking at IMDb Movies and Genres dataset 
+
+Being a movie junkie, I have a personal interest in exploring this dataset. Some possible points of interests can be
+
+- Big directors and their genres 
+- Have Ratings changed over time 
+- Is there an interaction between main and side genre that gives higher Ratings 
+- Censorship over time 
+- Relationships between actors and directors
+
+Potential modelling
+
+- Can we predict ratings given variables
+  - Need to first check for relationships 
+
+
+```{r read dataset, echo=FALSE, results='hide'}
+movies <- read.csv("IMDb_All_Genres_etf_clean1.csv")
+
+kable(head(movies)) %>% kable_styling()
+kable(str(movies)) %>% kable_styling()
+kable(summary(movies)) %>% kable_styling()
+```
+
+Let us do a cursory check on the data 
+
+```{r cleaning data}
+kable(sapply(movies, typeof)) %>% kable_styling()
+```
+We have a few columns: `r names(movies)`, and we have a total of `r nrow(movies)` rows of data (i.e. 5562 movies)
+
+We can see that something looks off - for example, total_gross should not be a character, lets take a look at a sample: `r head(movies$Total_Gross)` 
+- we can already see that it is probably made into a string due to presence of "Gross Unknown": `r head(unique(movies$Total_Gross), 10)`
+- hence we need to clean this up 
+
+We may also want to change some columns to factor, such as censor and genres 
+
+```{r cleaning (must run), results='hide'}
+# sum(movies$Total_Gross == "Gross Unkown")
+
+actorlist <- unlist(strsplit(movies$Actors, ",")) ## split according to commas, but here we lose granularity
+
+## replace "Gross Unkown" with NA
+movies[movies$Total_Gross == "Gross Unkown",]$Total_Gross = NA
+
+## remove the "$" and "M" prefix and suffix from the non-problematic entries
+library(stringr)
+movies[!is.na(movies$Total_Gross),]$Total_Gross <- 
+  str_sub(movies[!is.na(movies$Total_Gross),]$Total_Gross, 2, -2)
+
+## make numeric 
+movies$Total_Gross <-as.numeric(movies$Total_Gross)
+
+## set Censorship, Main genre to factor
+movies$Censor <- as.factor(movies$Censor)
+movies$main_genre <- as.factor(movies$main_genre)
+```
+
+## Univariate analysis
+
+To explore the data, we can look at some columns of interest one by one 
+
+```{r explore column 1 years}
+movies %>% ggplot(aes(x = Year)) + geom_histogram(col = "red") +
+  theme_classic() + ## for a nicer background
+  ggtitle(label = "Movie Years", subtitle = "When were the movies made") +
+  theme(plot.title = element_text(hjust = .5),
+        plot.subtitle = element_text(hjust = .5))
+```
+The years for the movies in this dataset are left skewed -- there are fewer movies made in the past than closer to the present. 
+- The range of years are `r range(movies$Year)`, representing more than 100 years of movies 
+
+
+```{r explore column 2 directors}
+top10directors <- movies %>% select(Director) %>% count(Director) %>% arrange(desc(n)) %>%
+  top_n(n = 10)
+
+## reorder the x in terms of -n in order to arrange bars in descending order 
+ggplot(top10directors, aes(x = reorder(Director, -n), y = n, fill = n)) + 
+  theme_bw() +
+  geom_bar(stat = "identity", color = "black")+
+  labs(title = "Directors with most movies", 
+       x = "Directors",
+       y = "Count")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = .5))  ## more visible tick markets for x axis 
+```
+
+```{r col 3 actors, warning=FALSE, results='hide', eval=FALSE}
+typeof(movies$Actors)
+is.vector(movies$Actors) ## Actors column is a vector of vectors, i.e. for every observation we have a vector of actors 
+
+actorlist <- unlist(strsplit(movies$Actors, ","))
+## split according to commas, but here we lose granularity i.e. which actors were in which movies
+## although we know that every 4 actors correspond to one movie 
+
+# for (i in (1:nrow(movies))){
+#   print(length(unlist(strsplit(movies$Actors[i], ","))))
+# }
+
+## Import library for splitting columns 
+library(splitstackshape)
+
+## Split actors column (list of 4 elements) into four column, each containing one element (one actor)
+movies <- cSplit(indt = movies, splitCols = "Actors", sep = ", ")
+names(movies) ## check result of the split
+
+## Clean up: need to apply same function across columns, therefore use APPLY functions 
+#movies[,10:13] <- trimws(movies[,10:13])
+#movies[,10] <- trimws(movies[,10])
+cleaned <- apply(movies[,10:13], MARGIN = 2 , FUN = trimws)
+
+## get 20 biggest actors in terms of number of movies 
+top20actorstable <- sort(table(Actors = actorlist), decreasing = T)[1:20]
+
+## one hot encoding -- We should try to create a variable that captures how many top actors (out of 4) is in that movie -- this may help predict success (rating or gross) of the movie 
+top20actorsnames <- names(top20actorstable)
+
+movies %>% mutate(num_big_actors = is)
+
+is.list(movies[1,10:13])
+sum(is.element(movies[3,10:13], top20actorsnames)) ## this counts the number of actors that exist in the top20actors list 
+
+## "Encoding" for number of big actors 
+movies$num_top_actors <- sum((is.element(movies[,10:13], top20actorsnames)))
+
+##debug 
+actors_columns <- movies[,10:13]
+is.element(actors_columns[8], top20actorsnames)
+
+kable(top20actorstable, format = "html") %>% kable_styling()
+
+```
+
+
+
+
+```{r col 4 ratings}
+movies %>% ggplot(aes(Rating)) + geom_histogram(col = "red") +
+  theme_bw() +
+  geom_vline(xintercept = mean(movies$Rating), linetype = "dashed") +
+  scale_x_continuous(breaks = (seq(1,10,by = 1))) 
+```
+```{r runtimes}
+movies %>% ggplot(aes(Runtime.Mins.)) + geom_histogram(col = "red") +
+  theme_bw() +
+  geom_vline(xintercept = mean(movies$Runtime.Mins.), linetype = "dashed")
+
+```
+
+Very right skewed movie durations, with most centering around low 100 minutes. 
+
+- Range of values: there are obviously outliers, `r range(movies$Runtime.Mins.)`, with the highest at 321, `r 321/60` hours of movies, which is very long! Compared to the average movie at `r mean(movies$Runtime.Mins.)`, this is almost 3 times as long  
+
+- The movie(s) is(are) `r movies[movies$Runtime.Mins.>300,]$Movie_Title`
+
+```{r investigate gross and also genre as a byproduct}
+sum(is.na(movies$Total_Gross))
+
+missinggross_movies <- movies[is.na(movies$Total_Gross),]
+
+## Investigate?
+
+# in terms of Year
+movies %>% ggplot(aes(x = Year)) + geom_histogram(aes(fill = is.na(Total_Gross)), col = "black") +
+  scale_fill_manual(values = c("#00BFC4","#F8766D" ))+ ## flip the colours 
+  guides(fill = guide_legend(title = "missing data?"))
+
+moviesgenrecount <- movies %>% group_by(main_genre) %>% count()
+
+## table of missing vs not missing genre (for plotting barplots)
+table_plot <- movies %>% group_by(main_genre) %>% summarise(no_missing = sum(is.na(Total_Gross))) %>% left_join(moviesgenrecount) %>% mutate(no_not_missing = n - no_missing) %>% select(main_genre, no_missing, no_not_missing)
+
+## make long table to be able to plot on ggplot barplot
+longtable <- table_plot %>%pivot_longer(cols = c("no_missing", "no_not_missing"), names_to = "Missing or not",
+                           values_to = "Count")
+
+longtable %>% ggplot(aes(x = reorder(main_genre, -Count), y = Count, fill = `Missing or not`)) + geom_bar(stat = "identity", position = "stack") +labs(title = "Genres with most missing gross data", 
+       x = "Genres",
+       y = "Count")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = .5)) +
+  scale_fill_discrete(labels = c("Missing", "Not Missing")) ## change legend labels in scale_fill_discrete
+  
+```
+
+From the histogram, there is a skew towards modern day movies that are missing gross totals. 
+
+In terms of directors, `r sum(is.element(missinggross_movies$Director, top10directors))` of the missing ones come from the top 10 directors. 
+
+Missing data for gross come somewhat proportionate from genres as well. 
+
+```{r censorship data}
+movies %>% group_by(Censor) %>% count() %>% arrange(desc(n))
+```
+
+We will ignore censorship for now 
+
+## Question 1: Big Directors Data 
+
+- Explore the ratings and gross of the top directors
+
+```{r}
+director1 <- movies %>% filter(Director %in% top10directors$Director) %>%
+  group_by(Director) %>% 
+  summarise(average_gross = mean(Total_Gross, na.rm = T),
+            average_rating = mean(Rating, na.rm = T)) %>% 
+  mutate(gross_rank = dense_rank(desc(average_gross))) %>%
+  mutate(rating_rank = dense_rank(desc(average_rating))) %>%
+  arrange(desc(average_gross))
+
+director1
+
+director1 %>% ggplot(aes(average_gross, average_rating)) + geom_point() +geom_smooth(method = 'lm')+
+  theme_classic()
+  
+movies %>% filter(Director %in% top10directors$Director) %>%
+  group_by(Director) %>% 
+  count(main_genre) %>%
+  slice_max(n =1, order_by = n)
+  
+```
+
+Can see that there is no clear correlation between ratings and gross for top directors, but our sample size is very small here
+
+This begs the question: in general, is there a clear relationship between the two variables? Take a bit of a detour
+
+## Relationship between Gross and Rating - is it clearly positive?
+
+Do better movies make more money?
+
+```{r}
+names(movies)
+
+## Plot Total Gross against Ratings
+movies %>% ggplot(aes(y = Total_Gross, x = Rating)) + geom_point() +geom_smooth(method = 'lm')+
+  theme_classic()
+
+## add colours for genre 
+movies %>% ggplot(aes(y = Total_Gross, x = Rating, colour = main_genre)) + geom_point() +
+  theme_classic() +
+  geom_smooth(method = 'lm',color = "black")
+
+
+```
+
+Strong statistical significance of linear effect of rating on total gross
+
+- Interpretation: For every 1 unit increase in rating, movies make ~ 6 million more
+
+Not great linear modelling since 
+
+- Very few X axis data (total gross) for high values : left skewed 
+
+  - `r mean(movies$Total_Gross, na.rm = T)` vs `r quantile(movies$Total_Gross, na.rm = T)`
+  - therefore confidence interval is very wide once we move rightwards 
+  - for each of the higher ratings, there are anomalies as well (data points that are much higher than normal) and this is related to the next point on variance 
+  
+Some of the exploding variance can be accounted for when we segment the plot into each genre -- we get to see a clear pattern of total gross - rating relationship for each genre. 
+
+Using interaction terms, we can see that 
+  
+- Variance of Rating
+
+  - the higher the rating, the higher the variance (spread of data points) for total gross
+
+Perhaps we should try to segment based on categorical variables? 
+
+
+```{r}
+## add facet across genre for many plots per genre (see for interactions )
+movies %>% ggplot(aes(y = Total_Gross, x = Rating, colour = main_genre)) + geom_point() +
+  theme_classic() + 
+  facet_wrap(~main_genre) +
+  geom_smooth(method = 'lm', color = "black")
+
+## Regress without and with genre interactions
+fit1 <- (lm(Total_Gross ~ Rating, movies))
+summary(fit1)
+## With interactions 
+fit2 <- (lm(Total_Gross ~ Rating*main_genre, movies)) ## Action = reference category
+summary(fit2)
+## there are significant interaction terms for genres i.e. movies have different gross-rating relationships according to what genre it falls under
+
+```
+
+### Linear model 
+
+We get a very significant coefficient/slope of rating. However, as we know from the plot, this is very misleading - we have exploding variance of the gross and ratings increase. This means that there is a lot of imprecision of the slope estimator (imagine fitting a line where you can pivot using the left side of the line, since the right side has so much variance). 
+
+Hence we cannot interpret this slope p value, despite looking very significant. However, according to OLS theory, the slope estimate itself is still OK in the sense that it is unbiased. Hence we do know that there is a positive relationship between ratings and gross total, i.e. the better the movie, the more money it makes. 
+
+Model evaluation (AIC) : `r AIC(fit1)`, however useless as a standalone metric. 
+
+#### Segmenting on genre
+
+Looking at a deeper level, there are different trend/slopes for movies according to the genre they fall in
+
+Linear regression looks much cleaner after faceting for genre, although some still suffer from increasing variance. 
+
+- Action movies may start at the lowest gross for the lowest ratings 
+
+- But they overtake the other genres once ratings start to go up, having the largest increase in gross per unit increase in ratings 
+  - this means that action movies are very profitable, as long as they are good 
+  - but action movies are plagued by bad heteroskedasticity - when movies are good, there is a lot of uncertainty about how much they can make! 
+
+This is seen from the estimate of slope (34) while every interaction term is negative - meaning that the other genres have a lower slope than Action which is the reference category. 
+
+- Comedy starts at the highest base total gross (i.e. intercept/ when rating = 0), but increases at a very modest rate (one of the smallest slopes with Noir and Western which is the worst)
+
+
+##### Was it worth the split? 
+
+`r AIC(fit2)` VS `r AIC(fit1)`
+
+A drop in AIC, which is a good sign. 
+
+`r anova(fit1, fit2)`
+
+The extra sums of squares are significant! 
+
+We have some anomalies from Comedy, Crime and Drama. Lets see if we can spot those movies
+
+```{r}
+comedy_subset <- movies %>% filter(main_genre == "Comedy")
+comedy_99percentile <- quantile(comedy_subset$Total_Gross, 0.995, na.rm = T)
+
+comedy_subset %>% ggplot(aes(y = Total_Gross, x = Rating )) + geom_point() +
+  theme_classic() + 
+  geom_smooth(method = "lm") +
+  geom_point(aes(col = Total_Gross > comedy_99percentile)) +
+  labs(title = "Comedy")
+
+comedy_subset %>% filter(Total_Gross > comedy_99percentile)
+
+```
+
+Closer inspection reveals that they are not clear anomalies, but nevertheless, we got to see the most popular overall comedy movies. 
+
+```{r}
+horror_subset <- movies %>% filter(main_genre == "Horror")
+horror_99percentile <- quantile(horror_subset$Total_Gross, 0.99, na.rm = T)
+
+horror_subset %>% ggplot(aes(y = Total_Gross, x = Rating)) + geom_point() +
+  theme_classic() + theme(legend.key.size = unit(0.1, "cm")) +
+    geom_smooth(method = "lm") +
+  geom_point(aes(col = Total_Gross > horror_99percentile)) +
+  labs(title = "Horror")
+
+horror_subset %>% filter(Total_Gross > horror_99percentile) 
+```
+
+Jorden Peele is really making his mark.
+
+```{r}
+drama_subset <- movies %>% filter(main_genre == "Drama")
+drama_99percentile <- quantile(drama_subset$Total_Gross, 0.99, na.rm = T)
+
+drama_subset %>% ggplot(aes(y = Total_Gross, x = Rating)) + geom_point() +
+  theme_classic() + theme(legend.key.size = unit(0.1, "cm")) +
+    geom_smooth(method = "lm") +
+  geom_point(aes(col = Total_Gross > drama_99percentile)) +
+  labs(title = "drama")
+
+drama_subset %>% filter(Total_Gross > drama_99percentile) %>% arrange(desc(Total_Gross))
+```
+
+
+```{r}
+## add facet for directors 
+movies %>% filter(Director %in% top10directors$Director)%>% ggplot(aes(y = Total_Gross, x = Rating, colour = main_genre)) + geom_point() +
+  theme_classic() + 
+  facet_wrap(~Director) +
+  geom_smooth(method = 'lm', color = "black")
+
+## Regress with directors as interaction terms 
+top_directors_subset <- movies %>% filter(is.element(Director, top10directors$Director))
+lm_fit_directors_interactions <- lm(Total_Gross~Rating*Director, data = top_directors_subset)
+summary(lm_fit_directors_interactions) ## Woody Allen = reference category 
+```
+
+#### Segmenting on directors 
+
+Despite segmenting (interacting) based on directors, we still get a lot of noise, and we 
+
+
+
+Overall, to try to see if we can still get linearity, we should first try some simple transformations. If not: 
+
+- We may look into *robust standard errors* so that we can still make inferences, or *weighted least squares* 
+
+When we take a microcosmic look into the top directors, we do see that some directors have greater variability than others. And this highly correlates with genre once again - 
+
+
+
+
+```{r log transform the data for linearity}
+## Log total gross
+movies %>% ggplot(aes(y = log(Total_Gross), x = Rating)) + geom_point() +geom_smooth(method = 'lm')+
+  theme_classic()
+
+## Log rating
+movies %>% ggplot(aes(y = (Total_Gross), x = log(Rating))) + geom_point() +geom_smooth(method = 'lm')+
+  theme_classic()
+
+## Log both 
+movies %>% ggplot(aes(y = log(Total_Gross), x = log(Rating))) + geom_point() +geom_smooth(method = 'lm')+
+  theme_classic()
+
+```
+
+When logging the data, we may end up getting a decreasing relationship. Hence, we will not use log transformations. 
+
+### Non linear modelling: Polynomials and Splines 
+
+Local regression 
+
+LOESS: (Wiki) combines the simplicity of linear least squares with the flexbility of nonlinear regression 
+- fits simple models to localised regions of the data 
+
+- main benefit is that the analyst does not need to specify the function f(x)
+
+- allows modelling complex processes for which no theoretical models exist 
+
+
+
+```{r}
+## 1: Locally estimated scatterplot smoothing 
+# What is the model?
+loessfit <- loess(Total_Gross ~ Rating, data = movies, span = 0.33)
+summary(loessfit)
+
+movies %>% ggplot(aes(y = Total_Gross, x = Rating, colour = main_genre)) + geom_point() +
+  theme_classic() + 
+  geom_smooth(method = 'loess', span = 1/3 ,color = "black")
+
+#2: Polynomial regression 
+movies1 <- movies %>% filter(!is.na(Total_Gross))
+fit_order2 <- lm(movies1$Rating ~ poly(movies1$Total_Gross,2))
+fit_order4 <- lm(movies1$Rating ~ poly(movies1$Total_Gross,4))
+
+summary(fit_order2) ## Adjusted R-squared:  0.01306
+summary(fit_order4) ## Adjusted R-squared:  0.04498
+anova(fit_order2, fit_order4) ## restricted model, then full model for df to be positive
+
+## Plot out polynomials
+# But we need new dataframe with predictions of fit_order2 and fit_order4
+temp_dataset <- data.frame(Ratings = seq(min(movies1$Rating), max(movies1$Rating), length.out = 1000))
+# temp_predict <- predict(fit_order2, temp_dataset)
+# temp_dataset$order2pred <- temp_predict
+# temp_predict2 <- predict(fit_order4, temp_dataset)
+# temp_dataset$order4pred <- temp_predict2
+
+## try another 
+temp_dataset <- data.frame(Ratings = movies1$Rating, Order2fit = fit_order2$fitted.values, Order4fit = fit_order4$fitted.values)
+
+
+temp_dataset %>% ggplot(aes(x = Ratings, y = Order2fit)) + geom_line(col = "red") +
+  theme_classic() + 
+  geom_point(data = movies, aes(x = Rating, y = Total_Gross), alpha = 0.1)
+```
+
+### Weighted least squares 
+
+
+If we aggregate based on directors 
+
+```{r}
+movies %>% ggplot(aes(Total_Gross, Rating)) + geom_point() +geom_smooth(method = 'lm')+
+  theme_classic()
+
+movies %>% group_by(Director) %>% 
+  summarise(average_gross = mean(Total_Gross, na.rm = T),
+            average_rating = mean(Rating, na.rm = T)) %>%
+  ggplot(aes(average_gross, average_rating)) + geom_point() +geom_smooth(method = 'lm')+
+  theme_classic()
+```
+
+## Predicting Ratings from other variables 
+
+```{r multiple linear model: numeric variables}
+names(movies)
+head(movies)
+## Get only numeric variables 
+numeric_vars <- unlist(lapply(movies, is.numeric), use.names = F)
+## Explore pairs plot - look for (linear) relationships
+pairs(movies[numeric_vars]) # - likely to have issues with interpretation due to increasing variances - check model diagnostics later 
+
+## MLR: NUMERIC ONLY 
+mlr1_num_only <- movies %>% select_if(is.numeric) %>% lm(Rating ~., data = .)
+summary(mlr1_num_only)
+
+
+## Check model! 
+
+#1. M.collinearity
+vif(mlr1_num_only)
+
+
+```
+From the pairs plots, despite the increasing variance, the conditional means of Ratings given the other variables look to be linear wrt those other variables (Total gross, Runtime, even Year)
+
+##### Checks for the numerical MLR model
+
+###### Multicollinearity - correlation *within* the covariates
+
+However, from the same pairs plot, we can see that there is reasonable correlation within the numerical factors chosen. We use the Variance Inflation Factor to measure the extent of multicollinearity for each variable, the higher the VIF, the higher the correlation between the chosen variable and Ratings. 
+(*From STHDA: VIF measures how much the variance of a regression coefficient i.e. slope estimate is inflated due to m.collinearity in the model*)
+
+Since VIF is not high for the numerical covariates, m.collinearity is not of issue. 
+
+###### Diagnostic checks 
+```{r mlr1 diagnostic checks}
+#2. Diagnostic plots - check for assumptions of linearity, homoskedasticity 
+par(mfrow = c(2,2))
+plot(mlr1_num_only)
+plot(mlr1_num_only, 4)
+```
+####### Residual vs fitted 
+
+We ideally want the residuals to be randomly scattered about the horizontal line at 0, without any systematic pattern. This would show an averaging of 0 i.e. indication or approximation of expectation of the errors around 0. Here, we can see that for smaller values of the fitted values (y_hat), they mostly cluster around 0, but then begin to tail off downwards as fitted values get larger. Hence we are not capturing some systematic component of Ratings for higher values of Ratings, and therefore this is captured by the residual terms on the right hand side of the plot. 
+
+####### QQplots of standardised residuals 
+
+We can see that at both tail ends, our points dip below the straight line of equivalence between the sample and theorectical quantiles. This means that our sample quantiles are consistently smaller than that of the theorectical quantiles at both ends, and since the theoretical quantile represents the standardised normal distribution, this means that our residuals quantiles are smaller on both ends and this means that our residuals suffer from *fatter tails*. 
+
+####### Leverage and influence plots 
+
+We do suffer from quite a lot of outliers or extreme points that suffer from high standardised residuals (bigger than 3 in magnitude)
+
+Cook's distance is a measurement of influence of points (points that generally are on the extreme end of the covaraite scales and have a large influence on the OLS estimated parameters of the slopes). We have a few points that have a high Cook's distance: points 332, 2922, 2946. `r movies[c(332,2992,2946),]`
+
+
+
+```{r, eval =FALSE, echo=FALSE, include=FALSE, error=TRUE}
+plot(Rating~ Year, movies)
+cor(movies$Year, movies$Rating)
+sm1 <- (lm(Rating~ Year, movies))
+summary(sm1)
+plot(sm1)
+
+plot(sqrt(Rating)~ (Year), movies)
+
+
+## Big MLR model
+
+  
+
+```
+
+
+```{r appendix, eval=FALSE}
+# ## vectors of all actors in the dataset
+# actorlist <- unlist(strsplit(movies$Actors, ",")) ## split according to commas, but here we lose granularity i.e. which actors were in which movies
+# movies$Actors <- strsplit(movies$Actors, ",")
+# 
+# movies$Actors <- str_squish(movies$Actors) ## remove whitespace from front
+
+```
+ 
